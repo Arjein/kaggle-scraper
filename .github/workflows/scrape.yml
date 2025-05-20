@@ -29,8 +29,10 @@ jobs:
 
       - name: Set up environment variables
         run: |
-          echo "${{ secrets.ENV_FILE }}" > src/.env
-          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > src/serviceAccount.json
+          echo "${{ secrets.ENV_FILE }}" > .env
+          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > serviceAccount.json
 
       - name: Run scraper
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: serviceAccount.json
         run: python src/scraper.py

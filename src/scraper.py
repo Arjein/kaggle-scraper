@@ -28,6 +28,7 @@ class KaggleScraper:
         self.js_file_path = os.path.join(self.current_dir, 'extract_content.js')
         self.last_scrape_datetime = os.environ.get('LAST_SCRAPE_DATETIME', None)
         self.db = firestore.Client()
+        self.existing_discussions = self.get_existing_discussions()
 
         if self.last_scrape_datetime == "None" or self.last_scrape_datetime is None:
             hundred_years_ago = datetime.now(timezone.utc) - timedelta(days=365*100)
@@ -48,7 +49,7 @@ class KaggleScraper:
         all_discussions = []
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
             
             # Start with the first page of competitions
@@ -191,7 +192,7 @@ class KaggleScraper:
                         await next_page_button.click()
                         # Wait for the page to load
                         await page.wait_for_load_state('networkidle')
-                        await asyncio.sleep(random.randint(3, 5)) 
+                        await asyncio.sleep(random.randint(5, 10)) 
                     except Exception as e:
                         print(f"Error navigating to next page: {e}")
                         # Fallback to direct URL navigation
@@ -373,100 +374,105 @@ class KaggleScraper:
                 for i, item in enumerate(discussion_items):
                     disc_page = None  # Initialize disc_page outside the try block
                     try:
+                        # Get the link to the discussion and extract disc_id
+                        link_elem = await item.query_selector("a[href*='/discussion/']")
+                        if link_elem:
+                            href = await link_elem.get_attribute('href')
+                            disc_url = f"https://www.kaggle.com{href}"
+                            disc_id = href.split('/')[-1] if href else "unknown"
+                        else:
+                            print(f"Could not find discussion link for item {i} on page {current_page}")
+                            continue
+
+                        # Get the title
+                        title = "Unknown title"
+                        for selector in [".sc-dFaThA", ".sc-jPkiSJ", "h3"]:
+                            title_elem = await item.query_selector(selector)
+                            if title_elem:
+                                title_text = await title_elem.text_content()
+                                if title_text and title_text.strip():
+                                    title = title_text.strip()
+                                    break
+
                         # Get upvote count to filter by popularity
                         upvote_span = await item.query_selector("span[aria-live='polite']")
                         upvotes_text = await upvote_span.text_content() if upvote_span else "0"
                         upvotes = int(re.search(r"(\d+)", upvotes_text).group(1)) if re.search(r"(\d+)", upvotes_text) else 0
-                        
+
                         # Only process discussions with enough upvotes
                         if upvotes >= minvote:
+                            # Check if discussion exists and upvotes/title are unchanged
+                            existing = self.existing_discussions.get(disc_id)
+                            if existing and existing.get("upvotes") == upvotes and existing.get("title") == title:
+                                print(f"Skipping unchanged discussion: {disc_id} (upvotes: {upvotes})")
+                                continue
+
                             items_with_enough_votes += 1
                             total_items_with_enough_votes += 1
-                            
-                            # Get the link to the discussion
-                            link_elem = await item.query_selector("a[href*='/discussion/']")
-                            if link_elem:
-                                href = await link_elem.get_attribute('href')
-                                disc_url = f"https://www.kaggle.com{href}"
-                                disc_id = href.split('/')[-1] if href else "unknown"
-                                
-                                # Check if we already have this discussion in our list
-                                if any(disc['id'] == disc_id for disc in discussions):
-                                    print(f"Skipping duplicate discussion: {disc_id}")
-                                    continue
-                                
-                                # Get the title
-                                title = "Unknown title"
-                                for selector in [".sc-dFaThA", ".sc-jPkiSJ", "h3"]:
-                                    title_elem = await item.query_selector(selector)
-                                    if title_elem:
-                                        title_text = await title_elem.text_content()
-                                        if title_text and title_text.strip():
-                                            title = title_text.strip()
-                                            break
-                                
-                                # Get author
-                                author_elem = await item.query_selector("a[emphasis]")
-                                author = await author_elem.text_content() if author_elem else "Unknown author"
-                                
-                                print(f"Processing discussion: {title} ({upvotes} upvotes)")
-                                
-                                # Now visit the discussion page to get its content
-                                disc_page = await browser.new_page()
-                                await disc_page.goto(disc_url)
-                                await disc_page.wait_for_load_state('networkidle')
 
-                                # Get the discussion content using JavaScript
-                                with open(self.js_file_path, 'r') as f:
-                                    js_code = f.read()
+                            # Check if we already have this discussion in our list
+                            if any(disc['id'] == disc_id for disc in discussions):
+                                print(f"Skipping duplicate discussion: {disc_id}")
+                                continue
 
-                                content_data = await disc_page.evaluate(f"""() => {{
-                                    {js_code}
-                                    return extractDiscussionContent();
-                                }}""")
+                            # Get author
+                            author_elem = await item.query_selector("a[emphasis]")
+                            author = await author_elem.text_content() if author_elem else "Unknown author"
 
-                                # Check for errors in extraction
-                                if content_data.get('error'):
-                                    print(f"Error extracting discussion content: {content_data['error']}")
-                                    content = ""
-                                else:
-                                    # Process the content text with enhanced RAG normalization
-                                    content = normalize_text_spacy(content_data.get('content', ""), for_rag=True) if content_data.get('content') else ""
-                                    
+                            print(f"Processing discussion: {title} ({upvotes} upvotes)")
 
-                                competition_rank = content_data.get('competitionRank')
-                                
-                                if competition_rank:
-                                    # Extract just the number from strings like "2nd", "3rd", "1357th"
-                                    rank_match = re.match(r'(\d+)', competition_rank)
-                                    if rank_match:
-                                        competition_rank = int(rank_match.group(1))
+                            # Now visit the discussion page to get its content
+                            disc_page = await browser.new_page()
+                            await disc_page.goto(disc_url)
+                            await disc_page.wait_for_load_state('networkidle')
 
-                                # Add all the extracted info to the discussion data
-                                discussion_data = {
-                                    "id": disc_id,
-                                    "competition_id": comp_id,
-                                    "title": title,
-                                    "url": disc_url,
-                                    "author": author.strip(),
-                                    "content": content,
-                                    "upvotes": upvotes,
-                                    "post_date": str_to_utc_iso(content_data.get('posted_datetime')),
-                                    "author_competition_rank": competition_rank,
-                                    "author_kaggle_rank": content_data.get('kaggleRank'),
-                                    "medal_type": content_data.get('medalType'),
-                                    "page_found": current_page,
-                                    "scraped_at": datetime.now(timezone.utc).isoformat()
-                                }
+                            # Get the discussion content using JavaScript
+                            with open(self.js_file_path, 'r') as f:
+                                js_code = f.read()
 
-                                discussions.append(discussion_data)
-                                
-                                # Add a small delay between requests
-                                await asyncio.sleep(random.randint(3, 5)) 
-                    
+                            content_data = await disc_page.evaluate(f"""() => {{
+                                {js_code}
+                                return extractDiscussionContent();
+                            }}""")
+
+                            # Check for errors in extraction
+                            if content_data.get('error'):
+                                print(f"Error extracting discussion content: {content_data['error']}")
+                                content = ""
+                            else:
+                                # Process the content text with enhanced RAG normalization
+                                content = normalize_text_spacy(content_data.get('content', ""), for_rag=True) if content_data.get('content') else ""
+
+                            competition_rank = content_data.get('competitionRank')
+                            if competition_rank:
+                                # Extract just the number from strings like "2nd", "3rd", "1357th"
+                                rank_match = re.match(r'(\d+)', competition_rank)
+                                if rank_match:
+                                    competition_rank = int(rank_match.group(1))
+
+                            # Add all the extracted info to the discussion data
+                            discussion_data = {
+                                "id": disc_id,
+                                "competition_id": comp_id,
+                                "title": title,
+                                "url": disc_url,
+                                "author": author.strip(),
+                                "content": content,
+                                "upvotes": upvotes,
+                                "post_date": str_to_utc_iso(content_data.get('posted_datetime')),
+                                "author_competition_rank": competition_rank,
+                                "author_kaggle_rank": content_data.get('kaggleRank'),
+                                "medal_type": content_data.get('medalType'),
+                                "page_found": current_page,
+                                "scraped_at": datetime.now(timezone.utc).isoformat()
+                            }
+
+                            discussions.append(discussion_data)
+
+                            # Add a small delay between requests
+                            await asyncio.sleep(random.randint(5, 10)) 
                     except Exception as e:
                         print(f"Error processing discussion item {i} on page {current_page}: {e}")
-                    
                     finally:
                         if disc_page:  # Only close if disc_page was created
                             await disc_page.close()
@@ -501,7 +507,7 @@ class KaggleScraper:
                         await next_page_button.click()
                         # Wait for the page to load
                         await page.wait_for_load_state('networkidle')
-                        await asyncio.sleep(random.randint(3, 5)) 
+                        await asyncio.sleep(random.randint(5, 10)) 
                     except Exception as e:
                         print(f"Error navigating to next discussion page: {e}")
                         has_next_page = False
@@ -517,6 +523,17 @@ class KaggleScraper:
             await page.close()
             
         return discussions
+    
+
+    def get_existing_competitions(self):
+        competitions_ref = self.db.collection('competitions')
+        docs = competitions_ref.stream()
+        return {doc.id: doc.to_dict() for doc in docs}
+
+    def get_existing_discussions(self):
+        discussions_ref = self.db.collection('discussions')
+        docs = discussions_ref.stream()
+        return {doc.id: doc.to_dict() for doc in docs}
 
 
 # Entry point for the script

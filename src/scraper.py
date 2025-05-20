@@ -49,7 +49,7 @@ class KaggleScraper:
         all_discussions = []
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             
             # Start with the first page of competitions

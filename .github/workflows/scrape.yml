@@ -1,0 +1,36 @@
+name: Run Kaggle Scraper every 4 hours
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'  # Every 4 hours
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
+
+      - name: Set up environment variables
+        run: |
+          echo "${{ secrets.ENV_FILE }}" > src/.env
+          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > src/serviceAccount.json
+
+      - name: Run scraper
+        run: python src/scraper.py

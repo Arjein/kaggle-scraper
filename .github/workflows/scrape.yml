@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.9'
 
       - name: Install dependencies
         run: |
@@ -36,9 +36,20 @@ jobs:
       - name: Set up environment variables
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
-          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > serviceAccount.json
-          jq . serviceAccount.json
-
+          
+          echo "Decoding GOOGLE_APPLICATION_CREDENTIALS_JSON secret..."
+          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" | base64 --decode > serviceAccount.json
+          
+          echo "Validating decoded serviceAccount.json with jq:"
+          if ! jq empty serviceAccount.json; then
+            echo "Invalid JSON in decoded serviceAccount.json."
+            echo "--- Content of serviceAccount.json that failed jq ---"
+            cat serviceAccount.json # Print the problematic content
+            echo "--- End of serviceAccount.json content ---"
+            exit 1
+          else
+            echo "serviceAccount.json is valid JSON according to jq."
+          fi
       - name: Run scraper
         env:
           GOOGLE_APPLICATION_CREDENTIALS: serviceAccount.json

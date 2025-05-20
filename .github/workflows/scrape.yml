@@ -31,6 +31,7 @@ jobs:
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
           echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > serviceAccount.json
+          jq . serviceAccount.json
 
       - name: Run scraper
         env:

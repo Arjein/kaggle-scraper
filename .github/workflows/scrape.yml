@@ -27,6 +27,12 @@ jobs:
       - name: Download spaCy model
         run: python -m spacy download en_core_web_sm
 
+      - name: DEBUG - Print GOOGLE_APPLICATION_CREDENTIALS_JSON secret
+        run: |
+          echo "Attempting to print GOOGLE_APPLICATION_CREDENTIALS_JSON secret:"
+          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}"
+          echo "Finished printing secret."
+          
       - name: Set up environment variables
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
